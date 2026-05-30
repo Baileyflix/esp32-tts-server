@@ -44,7 +44,7 @@ esp_err_t tts_synthesize(const char *text, uint16_t *sample_rate_out,
         buf[i] = (int16_t)(amp * 20000.0 * sin(2.0 * M_PI * TONE_HZ * t));
     }
 
-    ESP_LOGI(TAG, "\"%.*s\" -> %zu samples (%"PRIu32"ms)", 40, text, n, ms);
+    ESP_LOGI(TAG, "%.40s -> %d samples (%d ms)", text, (int)n, (int)ms);
     *sample_rate_out = SAMPLE_RATE;
     *pcm_out = buf;
     *samples_out = n;
