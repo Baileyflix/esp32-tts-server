@@ -1,0 +1,22 @@
+menu "TTS Server"
+
+    config TTS_WIFI_SSID
+        string "WiFi SSID"
+        default "myssid"
+        help
+            Default WiFi SSID. Override at runtime via NVS key wifi_ssid in namespace tts_cfg.
+
+    config TTS_WIFI_PASS
+        string "WiFi Password"
+        default ""
+        help
+            Default WiFi password. Override at runtime via NVS key wifi_pass in namespace tts_cfg.
+
+    config TTS_HTTP_PORT
+        int "HTTP server port"
+        default 80
+        range 1 65535
+        help
+            Port for the TTS HTTP server.
+
+endmenu
