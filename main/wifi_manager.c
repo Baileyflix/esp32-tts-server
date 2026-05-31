@@ -71,11 +71,15 @@ esp_err_t wifi_manager_start(void) {
     char ssid[64], pass[128];
     nvs_read_str("wifi_ssid", ssid, sizeof(ssid), CONFIG_TTS_WIFI_SSID);
     nvs_read_str("wifi_pass", pass, sizeof(pass), CONFIG_TTS_WIFI_PASS);
+    ESP_LOGI(TAG, "Credentials: SSID='%s' pass_len=%zu", ssid, strlen(pass));
 
     wifi_config_t wifi_cfg = {};
     strlcpy((char *)wifi_cfg.sta.ssid, ssid, sizeof(wifi_cfg.sta.ssid));
     strlcpy((char *)wifi_cfg.sta.password, pass, sizeof(wifi_cfg.sta.password));
     wifi_cfg.sta.threshold.authmode = strlen(pass) ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
+    wifi_cfg.sta.pmf_cfg.capable  = true;
+    wifi_cfg.sta.pmf_cfg.required = false;
+    wifi_cfg.sta.sae_pwe_h2e      = WPA3_SAE_PWE_HUNT_AND_PECK;
 
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_cfg));

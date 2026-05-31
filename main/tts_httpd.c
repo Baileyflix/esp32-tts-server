@@ -6,11 +6,61 @@
 #include "esp_http_server.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "sdkconfig.h"
 
 static const char *TAG = "tts-httpd";
 
-// --- helpers ----------------------------------------------------------------
+// --- WAV cache ---------------------------------------------------------------
+
+#define CACHE_MAX 32
+
+typedef struct {
+    char    *text;
+    uint8_t *wav;
+    size_t   len;
+} cache_entry_t;
+
+static cache_entry_t     s_cache[CACHE_MAX];
+static int               s_cache_n;
+static SemaphoreHandle_t s_cache_mutex;
+
+static const uint8_t *cache_get(const char *text, size_t *len_out) {
+    xSemaphoreTake(s_cache_mutex, portMAX_DELAY);
+    for (int i = 0; i < s_cache_n; i++) {
+        if (strcmp(s_cache[i].text, text) == 0) {
+            *len_out = s_cache[i].len;
+            const uint8_t *p = s_cache[i].wav;
+            xSemaphoreGive(s_cache_mutex);
+            return p;
+        }
+    }
+    xSemaphoreGive(s_cache_mutex);
+    return NULL;
+}
+
+static void cache_put(const char *text, const uint8_t *wav, size_t len) {
+    xSemaphoreTake(s_cache_mutex, portMAX_DELAY);
+    if (s_cache_n >= CACHE_MAX) {
+        xSemaphoreGive(s_cache_mutex);
+        return;
+    }
+    char *key = strdup(text);
+    uint8_t *buf = heap_caps_malloc(len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!buf) buf = malloc(len);
+    if (!key || !buf) {
+        free(key);
+        free(buf);
+        xSemaphoreGive(s_cache_mutex);
+        return;
+    }
+    memcpy(buf, wav, len);
+    s_cache[s_cache_n++] = (cache_entry_t){ key, buf, len };
+    xSemaphoreGive(s_cache_mutex);
+}
+
+// --- helpers -----------------------------------------------------------------
 
 static int hex_val(char c) {
     if (c >= '0' && c <= '9') return c - '0';
@@ -27,6 +77,7 @@ static char *url_decode(const char *src) {
     for (size_t i = 0; i < len; i++) {
         if (src[i] == '+') {
             dst[j++] = ' ';
+            continue;
         } else if (src[i] == '%' && i + 2 < len) {
             int h = hex_val(src[i + 1]), l = hex_val(src[i + 2]);
             if (h >= 0 && l >= 0) {
@@ -60,7 +111,7 @@ static void write_wav_header(uint8_t *buf, uint32_t samples,
     *(uint32_t *)(buf + 40) = data_sz;
 }
 
-// --- handlers ---------------------------------------------------------------
+// --- handlers ----------------------------------------------------------------
 
 static esp_err_t tts_handler(httpd_req_t *req) {
     char qs[512];
@@ -81,15 +132,25 @@ static esp_err_t tts_handler(httpd_req_t *req) {
         return ESP_FAIL;
     }
 
+    // Cache hit — serve immediately
+    size_t cached_len = 0;
+    const uint8_t *cached = cache_get(text, &cached_len);
+    if (cached) {
+        ESP_LOGI(TAG, "TTS (cached): \"%s\"", text);
+        free(text);
+        httpd_resp_set_type(req, "audio/wav");
+        httpd_resp_send(req, (const char *)cached, (ssize_t)cached_len);
+        return ESP_OK;
+    }
+
     ESP_LOGI(TAG, "TTS: \"%s\"", text);
 
     uint16_t rate;
     int16_t *pcm = NULL;
     size_t samples = 0;
     esp_err_t ret = tts_synthesize(text, &rate, &pcm, &samples);
-    free(text);
-
     if (ret != ESP_OK) {
+        free(text);
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Synthesis failed");
         return ESP_FAIL;
     }
@@ -100,6 +161,7 @@ static esp_err_t tts_handler(httpd_req_t *req) {
     uint8_t *wav = heap_caps_malloc(total, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!wav) wav = malloc(total);
     if (!wav) {
+        free(text);
         free(pcm);
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OOM");
         return ESP_FAIL;
@@ -109,10 +171,10 @@ static esp_err_t tts_handler(httpd_req_t *req) {
     memcpy(wav + 44, pcm, data_sz);
     free(pcm);
 
-    char clen[20];
-    snprintf(clen, sizeof(clen), "%zu", total);
+    cache_put(text, wav, total);
+    free(text);
+
     httpd_resp_set_type(req, "audio/wav");
-    httpd_resp_set_hdr(req, "Content-Length", clen);
     httpd_resp_send(req, (char *)wav, (ssize_t)total);
     free(wav);
     return ESP_OK;
@@ -124,9 +186,11 @@ static esp_err_t health_handler(httpd_req_t *req) {
     return ESP_OK;
 }
 
-// --- start ------------------------------------------------------------------
+// --- start -------------------------------------------------------------------
 
 esp_err_t tts_httpd_start(void) {
+    s_cache_mutex = xSemaphoreCreateMutex();
+
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.server_port    = CONFIG_TTS_HTTP_PORT;
     cfg.stack_size     = 8192;

@@ -1,6 +1,7 @@
 #include "nvs_flash.h"
 #include "esp_log.h"
 #include "wifi_manager.h"
+#include "tts_engine.h"
 #include "tts_httpd.h"
 
 static const char *TAG = "tts-main";
@@ -19,6 +20,7 @@ void app_main(void) {
     if (ret != ESP_OK)
         ESP_LOGW(TAG, "WiFi not connected — HTTP server still starting");
 
+    ESP_ERROR_CHECK(tts_engine_init());
     ESP_ERROR_CHECK(tts_httpd_start());
     ESP_LOGI(TAG, "Ready");
 }
